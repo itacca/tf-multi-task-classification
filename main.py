@@ -1,7 +1,14 @@
-"""MNIST Classification using Keras CNN
+"""Multi-task classification on MNIST dataset, using TF 2.2+.
 
-This script allows training and evaluating the simple CNN architecture,
-designed to solve MNIST classification task.
+This script allows training and evaluating the CNN architecture on two
+classification tasks:
+1. MNIST 10 class classification
+2. MNIST 2 class classification
+
+The first task is the classic MNIST classification, while the second one
+requires from the model to learn odd and even representation of numbers
+present in the image, and classify them to the respective classes (for
+ the sake of simplicity, they are denoted as "0" and "1").
 
 All steps in the pipeline (data loading / visualisation / augmentation,
 model build, model training and evaluation) are implemented as separate
@@ -22,18 +29,14 @@ By running this script, the full pipeline would be run:
 5. Model evaluation on the test dataset: simple accuracy metric.
 """
 import os
-from typing import List
 
 import mlflow
-import tensorflow as tf
 
-from base_data_loader import DataLoader
-from json_handling import load_json
-
+from json_handling import load_json, save_json
 from mnist_data_loader import MNISTDataLoader
 from mnist_model import MNISTModel
 from plotting import plot_learning_curves, PlotType
-from tf_batch_visualisation import DataVisualisation
+from tf_batch_visualisation import visualise_dataset_sample
 
 # Enable auto-logging to MLflow to capture TensorBoard metrics.
 mlflow.tensorflow.autolog()
@@ -47,64 +50,6 @@ mlflow.tensorflow.autolog()
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 
 CONFIG_PATH: str = "config_files/config.json"
-
-
-def check_gpu_visibility() -> bool:
-    """Checks whether the GPU is visible from TensorFlow."""
-
-    # Run the following command before using GPU (if needed):
-    # sudo ldconfig /usr/lib/cuda/lib64
-
-    recognized_gpu_devices: List = tf.config.list_physical_devices("GPU")
-    print("List of recognized GPU devices:")
-    print(recognized_gpu_devices)
-
-    if not recognized_gpu_devices:
-        return False
-
-    # Sanity check - GPU is found, now test with simple matrix multiplication
-    with tf.device('/gpu:0'):
-        a = tf.constant(
-            [1.0, 2.0, 3.0],
-            shape=[1, 3],
-            name='a'
-        )
-        b = tf.constant(
-            [1.0, 2.0, 3.0],
-            shape=[3, 1],
-            name='b'
-        )
-        c = tf.matmul(a, b)
-    print("Matrix multiplication result:")
-    tf.print(c)
-    return True
-
-
-def visualise_dataset_sample(
-        data_loader: DataLoader,
-        augmentation_config,
-        batch_ordinary_number: int = 1,
-        number_of_samples: int = 20,
-        original_data: bool = True,
-        augmented_data: bool = True
-) -> None:
-    """Visualises provided dataset.
-
-    It is possible to visualise both original and augmented images,
-    on the specified batch and provided number of samples.
-    """
-    # Prefetched dataset, shape (Tuple): ((None, 28, 28, 1), (None, 10))
-    train_dataset: tf.data.Dataset = data_loader.get_train_data()
-    data_augmentation = MNISTModel.get_augmentations(augmentation_config)
-
-    visualiser = DataVisualisation(train_dataset)
-    visualiser.visualise_dataset(
-        data_augmentation=data_augmentation,
-        batch_ordinary_number=batch_ordinary_number,
-        number_of_samples=number_of_samples,
-        original_data=original_data,
-        augmented_data=augmented_data
-    )
 
 
 def main() -> None:
@@ -124,6 +69,7 @@ def main() -> None:
 
     history = mnist_model.train()
     mnist_model.evaluate()
+    save_json(history, config["train"]["history_save_path"])
 
     plot_learning_curves(history, PlotType.ACCURACY)
 

@@ -20,4 +20,4 @@ test:
 	python -m unittest discover $(TESTS_DIR)
 
 run:
-    python main.py
+	python main.py

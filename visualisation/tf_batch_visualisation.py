@@ -1,12 +1,14 @@
 import math
-from abc import ABCMeta, abstractmethod
-from typing import Dict
+from abc import ABCMeta
 
 import numpy as np
 import tensorflow as tf
 from loguru import logger
 from matplotlib import pyplot as plt
 from tensorflow.keras import layers
+
+from base_data_loader import DataLoader
+from mnist_model import MNISTModel
 
 
 class DataVisualisation(metaclass=ABCMeta):
@@ -91,3 +93,31 @@ class DataVisualisation(metaclass=ABCMeta):
             )
         # Show the figure
         plt.show()
+
+
+def visualise_dataset_sample(
+        data_loader: DataLoader,
+        augmentation_config,
+        batch_ordinary_number: int = 1,
+        number_of_samples: int = 20,
+        original_data: bool = True,
+        augmented_data: bool = True
+) -> None:
+    """Visualises provided dataset.
+
+    It is possible to visualise both original and augmented images,
+    on the specified batch and provided number of samples.
+    """
+    # Prefetched dataset, shape (Tuple): ((None, 28, 28, 1), (None, 10))
+    train_dataset: tf.data.Dataset = data_loader.get_train_data()
+    data_augmentation = MNISTModel.get_augmentations(augmentation_config)
+
+    visualiser = DataVisualisation(train_dataset)
+    visualiser.visualise_dataset(
+        data_augmentation=data_augmentation,
+        batch_ordinary_number=batch_ordinary_number,
+        number_of_samples=number_of_samples,
+        original_data=original_data,
+        augmented_data=augmented_data
+    )
+

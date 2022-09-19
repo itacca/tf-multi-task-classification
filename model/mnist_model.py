@@ -1,5 +1,6 @@
 import os
-from typing import Dict
+import tensorflow as tf
+from typing import Dict, Tuple
 
 from loguru import logger
 
@@ -120,28 +121,55 @@ class MNISTModel(BaseModel):
                 f"The provided choice {self.config['model']['closing_layer']}"
                 f" is not supported / implemented."
             )
-        outputs = layers.Dense(
-            self.config["model"]["output"],
-            activation="softmax"
-        )(x)
+        # Multi-head classification
+        x = layers.Dense(1024)(x)
 
-        self.model = keras.Model(inputs, outputs)
+        # 10 class classification
+        # Here we try with two Fully-Connected layers.
+        x_1 = layers.Dense(512)(x)
+        x_1 = layers.Dense(256)(x_1)
+        output_1 = layers.Dense(
+            self.config["model"]["output"],
+            activation="softmax",
+            name="task_1"
+        )(x_1)
+
+        # 2 class classification
+        # The assumption is that the binary classification is easier
+        # task than the 10-class classification, so we put only one
+        # Fully connected layer.
+        x_2 = layers.Dense(256)(x)
+        output_2 = layers.Dense(
+            1, activation="sigmoid", name="task_2"
+        )(x_2)
+        self.model = keras.Model(inputs, [output_1, output_2])
 
     def train(self) -> dict:
         """Train the model on the provided data. """
         self.model.summary()
 
-        # sgd = keras.optimizers.SGD(learning_rate=0.01, momentum=0.8)
+        if self.config["train"]["train_loop"] == "custom":
+            history = self.custom_train_loop()
+        elif self.config["train"]["train_loop"] == "classic":
+            history = self.classic_train_loop()
+        else:
+            raise Exception("The specified train loop "
+                            "approach does not exist! ")
+        return history
+
+    def classic_train_loop(self) -> Dict:
+        """Model training using predefined 'compile' and 'fit' methods. """
         self.model.compile(
             # We don't need 'sparse' categorical CE function since our
-            # labels are one-hot encoded.
-            loss=self.config["train"]["loss"],
+            # labels are one-hot encoded for 10-class classification task.
+            loss={
+                "task_1": "categorical_crossentropy",
+                "task_2": "binary_crossentropy"
+            },
             optimizer=self.config["train"]["optimizer"],
             metrics=self.config["train"]["metrics"]
         )
-
         callbacks = self.initialize_callbacks()
-
         train_dataset = self.data_loader.get_train_data()
         validation_dataset = self.data_loader.get_validation_data()
         history = self.model.fit(
@@ -152,6 +180,120 @@ class MNISTModel(BaseModel):
             callbacks=callbacks
         )
         return history.history
+
+    def custom_train_loop(self) -> any:
+        """Model training using 'GradientTape', custom training loop. """
+        # Since we are not using 'compile' method, we initialize
+        # optimizers, loss functions and metrics on our own.
+        optimizer = tf.keras.optimizers.Adam()
+
+        # Loss functions for 10-class and 2-class
+        # classification, respectively.
+        loss_function_1 = tf.keras.losses.CategoricalCrossentropy(
+            name="task_1_loss")
+        loss_function_2 = tf.keras.losses.BinaryCrossentropy(
+            name="task_2_loss")
+
+        # NOTE: TF is able to deduce the right accuracy metric
+        # necessary for the specific task: e.g. in the case of 10 class
+        # classification, the right one should be "CategoricalAccuracy".
+        # However, when there are two learning tasks in the custom
+        # training loop, each metric needs to be defined precisely.
+        # Accuracy metrics for the first task.
+        train_metrics_1 = tf.keras.metrics.CategoricalAccuracy(
+            name="task_1_train_accuracy")
+        val_metrics_1 = tf.keras.metrics.CategoricalAccuracy(
+            name="task_1_val_accuracy")
+
+        # Accuracy metrics for the second task.
+        train_metrics_2 = tf.keras.metrics.BinaryAccuracy(
+            name="task_2_train_accuracy")
+        val_metrics_2 = tf.keras.metrics.BinaryAccuracy(
+            name="task_2_val_accuracy")
+
+        metrics = [
+            train_metrics_1, train_metrics_2,
+            val_metrics_1, val_metrics_2
+        ]
+
+        # Training history would be useful for plotting
+        # training graphs once the training process is finished.
+        # Initialize training history, epoch level.
+        epoch_training_history = {
+            loss_function_1.name: [],
+            loss_function_2.name: []
+        }
+        for metric in metrics:
+            epoch_training_history[metric.name] = []
+
+        # Prepare train and validation datasets.
+        train_dataset = self.data_loader.get_train_data()
+        validation_dataset = self.data_loader.get_validation_data()
+
+        epochs = self.config["train"]["epochs"]
+        batch_size = self.config["train"]["batch_size"]
+        loss_task_1 = 0
+        loss_task_2 = 0
+
+        # The following code actually replaces 'fit' method. This is
+        # where the whole training procedure happens (validation as well).
+        for epoch in range(epochs):
+            logger.info(f"\nEpoch {epoch + 1}/{epochs}")
+
+            for step, batch in enumerate(train_dataset):
+
+                loss_task_1, loss_task_2 = train_step(
+                    model=self.model,
+                    batch=batch,
+                    loss_function_1=loss_function_1,
+                    loss_function_2=loss_function_2,
+                    optimizer=optimizer,
+                    train_metrics_1=train_metrics_1,
+                    train_metrics_2=train_metrics_2
+                )
+                if step % 100 == 0:
+                    logger.info(
+                        f"Step {step}: training loss = "
+                        f"{float(loss_task_1)}, {float(loss_task_2)}"
+                    )
+                    logger.info(
+                        f"Seen so far: {(step + 1) * batch_size} samples"
+                    )
+            train_accuracy_1 = train_metrics_1.result()
+            train_accuracy_2 = train_metrics_2.result()
+
+            epoch_training_history[
+                loss_function_1.name].append(float(loss_task_1))
+            epoch_training_history[
+                loss_function_2.name].append(float(loss_task_2))
+
+            print(
+                "Training accuracy over the epoch: %.4f, %.4f"
+                % (float(train_accuracy_1), float(train_accuracy_2))
+            )
+
+            # Run a validation loop at the end of each epoch
+            for (
+                    x_batch_val, (y_batch_val_1, y_batch_val_2)
+            ) in validation_dataset:
+                # Forward pass
+                val_output_1, val_output_2 = self.model(x_batch_val)
+
+                val_metrics_1.update_state(y_batch_val_1, val_output_1)
+                val_metrics_2.update_state(y_batch_val_2, val_output_2)
+            val_accuracy_1 = val_metrics_1.result()
+            val_accuracy_2 = val_metrics_2.result()
+
+            for metric in metrics:
+                epoch_training_history[
+                    metric.name
+                ].append(float(metric.result()))
+                metric.reset_states()
+
+            print(
+                "Validation accuracy: %.4f, %.4f"
+                % (float(val_accuracy_1), float(val_accuracy_2)))
+        return epoch_training_history
 
     def initialize_callbacks(self):
         """Creates and retrieves callback functions for the upcoming training.
@@ -188,13 +330,125 @@ class MNISTModel(BaseModel):
         ]
         return callbacks
 
-    def evaluate(self):
+    def evaluate(self) -> None:
         """Evaluate trained model on test data with corresponding labels."""
+        if self.config["train"]["train_loop"] == "custom":
+            self.custom_evaluate()
+        elif self.config["train"]["train_loop"] == "classic":
+            self.classic_evaluate()
+        else:
+            raise Exception("The specified train loop "
+                            "approach does not exist! ")
 
+    def classic_evaluate(self) -> None:
+        """Evaluate model trained by classic train loop. """
         test_dataset = self.data_loader.get_test_data()
         score = self.model.evaluate(test_dataset, verbose=1)
+        # Score[0] - total loss (in our case, sum of specific losses)
+        # Score[1] - loss for task 1
+        # Score[2] - loss for task 2
+        # Score[3] - accuracy for task 1 (Categorical Accuracy)
+        # Score[4] - accuracy for task 2 (Binary Accuracy)
+        average_accuracy = (score[3] + score[4]) / 2
         print(f"Test loss: {score[0]}")
-        print(f"Test accuracy: {score[1]}")
+        print(f"Test accuracy: {average_accuracy}")
+
+    def custom_evaluate(self) -> None:
+        """Evaluate model trained by custom train loop. """
+        test_dataset = self.data_loader.get_test_data()
+
+        # Define losses like in the train loop.
+        loss_function_1 = tf.keras.losses.CategoricalCrossentropy(
+            name="task_1_loss")
+        loss_function_2 = tf.keras.losses.BinaryCrossentropy(
+            name="task_2_loss")
+
+        # Define average loss.
+        loss_avg = tf.keras.metrics.Mean()
+
+        # Define task-specific accuracies.
+        metric_1 = tf.keras.metrics.CategoricalAccuracy(
+            name="val_task_1_accuracy")
+        metric_2 = tf.keras.metrics.BinaryAccuracy(
+            name="val_task_2_accuracy")
+
+        for x_batch_val, (y_batch_val_1, y_batch_val_2) in test_dataset:
+            # Forward pass
+            val_output_1, val_output_2 = self.model(x_batch_val)
+
+            loss_task_1 = loss_function_1(y_batch_val_1, val_output_1)
+            loss_task_2 = loss_function_2(y_batch_val_2, val_output_2)
+
+            # We treat both losses equally - weights are the same
+            # total_loss = loss_task_1 + loss_task_2
+            total_loss = [loss_task_1, loss_task_2]
+            loss_avg.update_state(total_loss)
+
+            metric_1.update_state(y_batch_val_1, val_output_1)
+            metric_2.update_state(y_batch_val_2, val_output_2)
+        accuracy_task_1 = metric_1.result()
+        accuracy_task_2 = metric_2.result()
+        # NOTE: There different ways to incorporate the separate
+        # accuracies in one final accuracy, this is the easiest
+        # way to implement one of it.
+        average_accuracy = (accuracy_task_1 + accuracy_task_2) / 2
+        print(f"Test loss: {loss_avg.result()}")
+        print(f"Test accuracy: {average_accuracy}")
 
     def predict(self):
         pass
+
+
+# NOTE 1: 'tf.function' annotation actually helps this part of code to
+# run much faster. It is not possible to place this method inside a custom
+# class like the upper one - unless the inherited class is 'tf.keras.Model'.
+# NOTE 2: In order to replicate accuracies obtained by the classic 'fit'
+# method, it seems as a necessity to have 'tf.function' annotation on the
+# custom train loop. For some reason, it stabilizes the network training,
+# helping it converge earlier.
+@tf.function
+def train_step(
+        model: tf.keras.Model,
+        batch: Tuple,
+        loss_function_1: tf.keras.losses.Loss,
+        loss_function_2: tf.keras.losses.Loss,
+        optimizer: tf.keras.optimizers.Optimizer,
+        train_metrics_1: tf.keras.metrics.Metric,
+        train_metrics_2: tf.keras.metrics.Metric
+) -> Tuple:
+    """Custom train loop.
+
+    The function encapsulates forward pass, loss calculation, gradient
+    optimization and logging of the metrics.
+    """
+    # 'GradientTape' keeps track of trainable variables - its method
+    # 'gradient' calculates the gradient update for each trainable
+    # variable, based on the calculated loss.
+    with tf.GradientTape() as tape:
+        # The number of elements in the tuple with labels is equal
+        # to the number of tasks that the model is being trained on.
+        # In our case, 2.
+        x_batch, (y_batch_1, y_batch_2) = batch
+
+        # Forward pass
+        output_1, output_2 = model(x_batch, training=True)
+
+        # Loss for 10 class classification task.
+        loss_task_1 = loss_function_1(y_batch_1, output_1)
+        # Loss for 2 class classification task.
+        loss_task_2 = loss_function_2(y_batch_2, output_2)
+
+        # We treat both losses equally - weights are the same (1).
+        total_loss = [loss_task_1, loss_task_2]
+    gradients = tape.gradient(
+        total_loss, model.trainable_weights
+    )
+    optimizer.apply_gradients(
+        zip(gradients, model.trainable_weights)
+    )
+
+    # Update task-related metrics.
+    train_metrics_1.update_state(y_batch_1, output_1)
+    train_metrics_2.update_state(y_batch_2, output_2)
+
+    return loss_task_1, loss_task_2

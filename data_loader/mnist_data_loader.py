@@ -43,18 +43,37 @@ class MNISTDataLoader(DataLoader):
         x_train = np.expand_dims(x_train, -1)
         x_test = np.expand_dims(x_test, -1)
 
+        ###############################################
+        # Create artificial labels for the second task.
+        ###############################################
+        # Since the original dataset does not have labels for multiple
+        # tasks, we create artificial set of labels for the second task.
+        # The second set of labels (hence the task #2 itself) is quite
+        # trivial: if the image represents an odd number, we would assign
+        # it the label "1", otherwise the label would be "0".
+
+        y_train_labels_task_2 = list(map(lambda x: x % 2, y_train))
+        y_test_labels_task_2 = list(map(lambda x: x % 2, y_test))
+
         num_of_classes = self.config["data"]["num_of_classes"]
         # Convert class vectors to binary class matrices (one-hot encoding).
-        y_train = keras.utils.to_categorical(
+        y_train_labels_task_1 = keras.utils.to_categorical(
             y_train, num_classes=num_of_classes
         )
-        y_test = keras.utils.to_categorical(
+        y_test_labels_task_1 = keras.utils.to_categorical(
             y_test, num_classes=num_of_classes
         )
 
-        train_im, valid_im, train_lab, valid_lab = train_test_split(
+        # Train - validation split for images and
+        # both sets of labels (one set per each task).
+        (
+            train_images, valid_images,
+            train_labels_task_1, valid_labels_task_1,
+            train_labels_task_2, valid_labels_task_2
+        ) = train_test_split(
             x_train,
-            y_train,
+            y_train_labels_task_1,
+            y_train_labels_task_2,
             test_size=self.config["data"]["test_size"],
             # Dataset stratification: it is desirable to split the dataset
             # into train and test sets in a way that preserves the same
@@ -66,21 +85,25 @@ class MNISTDataLoader(DataLoader):
         )
 
         train_dataset = tf.data.Dataset.from_tensor_slices(
-            (train_im, train_lab)
+            # The first element in this outer tuple represents images,
+            # the first element of inner tuple represents labels for the
+            # first task, while the second element of the inner tuple
+            # represents the labels for the second task.
+            (train_images, (train_labels_task_1, train_labels_task_2))
         )
         # Build pipeline for training set
         self.train_dataset = self.build_data_pipeline(
-            train_dataset, len(train_im))
+            train_dataset, len(train_images))
 
         validation_dataset = tf.data.Dataset.from_tensor_slices(
-            (valid_im, valid_lab)
+            (valid_images, (valid_labels_task_1, valid_labels_task_2))
         )
         # Build pipeline for validation set
         self.validation_dataset = self.build_data_pipeline(
-            validation_dataset, len(valid_im))
+            validation_dataset, len(valid_images))
         # Build pipeline for test set
         self.test_dataset = tf.data.Dataset.from_tensor_slices(
-            (x_test, y_test)
+            (x_test, (y_test_labels_task_1, y_test_labels_task_2))
         )
         self.test_dataset = self.test_dataset.batch(1)
 

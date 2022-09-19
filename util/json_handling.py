@@ -1,7 +1,7 @@
 import json
 
 
-def save_json(data: dict, save_path) -> str:
+def save_json(data: dict, save_path: str) -> str:
     """Util function: save data from dictionary to JSON file. """
     with open(save_path, 'w') as json_file:
         json.dump(data, json_file, indent=4)

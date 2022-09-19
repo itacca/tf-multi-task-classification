@@ -11,7 +11,9 @@
         "loss": "categorical_crossentropy",
         "optimizer": "adam",
         "metrics": ["accuracy"],
-        "checkpoint_dir": "checkpoint_dir"
+        "checkpoint_dir": "checkpoint_dir",
+        "history_save_path": "history.json",
+        "train_loop": "custom"
     },
     "model": {
         "augmentation": {
